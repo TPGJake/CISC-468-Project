@@ -148,16 +148,17 @@ def execute_handshake(sock, my_identity_private_key, trusted_peers):
    # Initialize separate memory queues for uploads and downloads
     pending_uploads = []
     pending_downloads = {} # Maps filename -> b64_data payload
+    requested_files = [] # Track requested files to correlate responses
 
     # Start the Receive Thread
     threading.Thread(
         target=receive_loop, 
-        args=(sock, session_key, pending_uploads, pending_downloads), 
+        args=(sock, session_key, pending_uploads, pending_downloads, requested_files), 
         daemon=True
     ).start()
     
     # Run the UI Thread
-    user_interface_loop(sock, session_key, pending_uploads, pending_downloads)
+    user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files)
 
 
 class PeerListener:
@@ -207,7 +208,7 @@ def decrypt_message(session_key, encrypted_payload):
     return aesgcm.decrypt(nonce, ciphertext, None)
 
 
-def receive_loop(sock, session_key, pending_uploads, pending_downloads):
+def receive_loop(sock, session_key, pending_uploads, pending_downloads, requested_files):
     while True:
         try:
             raw_msglen = recvall(sock, 4)
@@ -223,7 +224,7 @@ def receive_loop(sock, session_key, pending_uploads, pending_downloads):
             plaintext_bytes = decrypt_message(session_key, encrypted_payload)
             message = json.loads(plaintext_bytes.decode('utf-8'))
             
-            handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads)
+            handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads, requested_files)
             
         except Exception as e:
             print(f"\n[-] Receive loop error: {e}")
@@ -243,10 +244,10 @@ def recvall(sock, n):
         data.extend(packet)
     return bytes(data)
 
-def handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads):
+def handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads, requested_files):
     action = message.get("action")
     
-    if action == "request_file":
+    if action == "REQ_FILE":
         filename = message.get("filename")
         print(f"\n[PEER ALERT] Peer is requesting file: '{filename}'")
         print(f"             Type 'approve {filename}' or 'deny {filename}' to respond.")
@@ -256,7 +257,7 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
             
         print("P2P> ", end="", flush=True) 
 
-    elif action == "send_file":
+    elif action == "SEND_FILE":
         filename = message.get("filename")
         b64_data = message.get("data")
         
@@ -271,19 +272,44 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
             
         print("P2P> ", end="", flush=True)
 
-    elif action == "request_list":
+    elif action == "REQ_LIST":
         print("\n[PEER] Peer requested your file list.")
         
-        public_dir = os.path.join(BASE_DIR, "public_files")
+        public_dir = os.path.join(BASE_DIR, "available_files")
         os.makedirs(public_dir, exist_ok=True)
         
         available_files = []
         for f in os.listdir(public_dir):
             if os.path.isfile(os.path.join(public_dir, f)) and not f.startswith('.'):
                 available_files.append(f)
-        
+
+    elif action == "RES_FILE":
+
+        filename = message.get("filename")
+        b64_data = message.get("data")
+        if b64_data:
+            print(f"\n[PEER ALERT] Peer sent a file: '{filename}'")
+            if filename in requested_files:
+                print(f"             This is a response to your request for '{filename}'.")
+                requested_files.remove(filename) # Remove from tracking
+
+            else:
+                print(f"             You did not request '{filename}'. It will not be downloaded.")
+                return
+
+        else:
+            print(f"\n[-] Peer sent empty file data for '{filename}'")
+            return
+
+        file_bytes = base64.b64decode(b64_data)
+        safe_filename = f"received_{filename}"
+        with open(safe_filename, "wb") as f:
+            f.write(file_bytes)
+        print(f"[*] Saved '{filename}' to disk as '{safe_filename}'.")
+
+
         resp_dict = {
-            "action": "send_list",
+            "action": "SEND_LIST",
             "data": available_files
         }
         
@@ -294,7 +320,7 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
         print("[*] Public file list automatically sent to peer.")
         print("P2P> ", end="", flush=True)
 
-    elif action == "send_list":
+    elif action == "SEND_LIST":
         file_list = message.get("data", [])
         
         print("\n[+] Peer's Available Files:")
@@ -312,8 +338,7 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
 
 
 def send_file_to_peer(sock, session_key, filename):
-    # Route the path into the public folder
-    filepath = os.path.join(BASE_DIR, "public_files", filename)    
+    filepath = os.path.join(BASE_DIR, "available_files", filename)    
     try:
         with open(filepath, "rb") as f:
             file_bytes = f.read()
@@ -321,7 +346,7 @@ def send_file_to_peer(sock, session_key, filename):
         b64_data = base64.b64encode(file_bytes).decode('utf-8')
         
         response_dict = {
-            "action": "send_file",
+            "action": "SEND_FILE",
             "filename": filename,
             "data": b64_data
         }
@@ -334,9 +359,36 @@ def send_file_to_peer(sock, session_key, filename):
         print(f"\n[+] Successfully sent '{filename}' to peer.")
         
     except FileNotFoundError:
-        print(f"\n[-] Error: '{filename}' does not exist in your public_files directory.")
+        print(f"\n[-] Error: '{filename}' does not exist in your available_files directory.")
 
-def user_interface_loop(sock, session_key, pending_uploads, pending_downloads):
+
+def send_response_file_to_peer(sock, session_key, filename):
+    filepath = os.path.join(BASE_DIR, "available_files", filename)    
+    try:
+        with open(filepath, "rb") as f:
+            file_bytes = f.read()
+            
+        b64_data = base64.b64encode(file_bytes).decode('utf-8')
+        
+        response_dict = {
+            "action": "RES_FILE",
+            "filename": filename,
+            "data": b64_data
+        }
+        
+        payload_bytes = json.dumps(response_dict).encode('utf-8')
+        encrypted_payload = encrypt_message(session_key, payload_bytes)
+        length_prefix = struct.pack('!I', len(encrypted_payload))
+        
+        sock.sendall(length_prefix + encrypted_payload)
+        print(f"\n[+] Successfully sent '{filename}' to peer.")
+        
+    except FileNotFoundError:
+        print(f"\n[-] Error: '{filename}' does not exist in your available_files directory.")
+
+
+
+def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files):
     print("\n[+] Secure Tunnel Ready.")
     print("Commands: request <file>, approve <file>, deny <file>, accept <file>, reject <file>, request_list, exit")
     
@@ -352,12 +404,16 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads):
             if cmd == "exit":
                 sock.close()
                 os._exit(0)
+            
+            elif cmd == "send" and len(parts) == 2:
+                filename = parts[1]
+                send_file_to_peer(sock, session_key, filename)
                 
             elif cmd == "approve" and len(parts) == 2:
                 filename = parts[1]
                 if filename in pending_uploads:
                     pending_uploads.remove(filename)
-                    send_file_to_peer(sock, session_key, filename)
+                    send_response_file_to_peer(sock, session_key, filename)
                 else:
                     print(f"[-] No pending upload request for '{filename}'.")
                     
@@ -396,6 +452,7 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads):
                 payload = json.dumps(req_dict).encode('utf-8')
                 encrypted_payload = encrypt_message(session_key, payload)
                 sock.sendall(struct.pack('!I', len(encrypted_payload)) + encrypted_payload)
+                requested_files.append(filename) # Track requested file
                 print(f"[*] Requested '{filename}' from peer...")
 
             elif cmd == "request_list":
