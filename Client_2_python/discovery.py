@@ -183,13 +183,18 @@ class PeerListener:
             peer_port = info.port
             print(f"[+] Peer discovered: {peer_ip}:{peer_port}")
             
-            if self.local_ip > peer_ip:
+            my_address = f"{self.local_ip}:{self.listen_port}"
+            peer_address = f"{peer_ip}:{peer_port}"
+            
+            if my_address > peer_address:
                 print("[*] I am the Server. Starting listener...")
                 threading.Thread(target=start_raw_server, args=(self.local_ip, self.listen_port, self.my_priv_key, self.trusted_peers)).start()
             else:
                 print("[*] I am the Client. Connecting to peer...")
                 time.sleep(1) 
                 threading.Thread(target=connect_to_peer_raw, args=(peer_ip, peer_port, self.my_priv_key, self.trusted_peers)).start()
+
+                
 
     def update_service(self, zeroconf, type_, name):
         pass
@@ -283,6 +288,21 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
             if os.path.isfile(os.path.join(public_dir, f)) and not f.startswith('.'):
                 available_files.append(f)
 
+        resp_dict = {
+            "action": "SEND_LIST",
+            "data": available_files
+        }
+        
+        payload_bytes = json.dumps(resp_dict).encode('utf-8')
+        encrypted_payload = encrypt_message(session_key, payload_bytes)
+        
+        length_prefix = struct.pack('!I', len(encrypted_payload))
+        
+        sock.sendall(length_prefix + encrypted_payload)
+        
+        print("[*] Public file list automatically sent to peer.")
+        print("P2P> ", end="", flush=True)
+
     elif action == "RES_FILE":
 
         filename = message.get("filename")
@@ -308,17 +328,7 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
         print(f"[*] Saved '{filename}' to disk as '{safe_filename}'.")
 
 
-        resp_dict = {
-            "action": "SEND_LIST",
-            "data": available_files
-        }
         
-        payload_bytes = json.dumps(resp_dict).encode('utf-8')
-        encrypted_payload = encrypt_message(session_key, payload_bytes)
-        sock.sendall(struct.pack('!I', len(encrypted_payload)) + encrypted_payload)
-        
-        print("[*] Public file list automatically sent to peer.")
-        print("P2P> ", end="", flush=True)
 
     elif action == "SEND_LIST":
         file_list = message.get("data", [])
@@ -448,7 +458,7 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, r
 
             elif cmd == "request" and len(parts) == 2:
                 filename = parts[1]
-                req_dict = {"action": "request_file", "filename": filename}
+                req_dict = {"action": "REQ_FILE", "filename": filename}
                 payload = json.dumps(req_dict).encode('utf-8')
                 encrypted_payload = encrypt_message(session_key, payload)
                 sock.sendall(struct.pack('!I', len(encrypted_payload)) + encrypted_payload)
@@ -456,7 +466,7 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, r
                 print(f"[*] Requested '{filename}' from peer...")
 
             elif cmd == "request_list":
-                req_dict = {"action": "request_list"}
+                req_dict = {"action": "REQ_LIST"}
                 payload = json.dumps(req_dict).encode('utf-8')
                 encrypted_payload = encrypt_message(session_key, payload)
                 sock.sendall(struct.pack('!I', len(encrypted_payload)) + encrypted_payload)
