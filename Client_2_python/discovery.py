@@ -13,10 +13,35 @@ import json
 import struct
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import base64
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
 
 SERVICE_TYPE = "_cisc468p2p._tcp.local."
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def get_local_storage_key():
+    """Derives an AES key from a user password for local file encryption."""
+    salt_path = os.path.join(BASE_DIR, "storage_salt.bin")
+    
+    if os.path.exists(salt_path):
+        with open(salt_path, "rb") as f:
+            salt = f.read()
+    else:
+        salt = os.urandom(16)
+        with open(salt_path, "wb") as f:
+            f.write(salt)
+            
+
+    password = input("\n Enter your Master Password to unlock local storage: ").encode('utf-8')
+    
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=480000,
+    )
+    return kdf.derive(password)
 
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -158,7 +183,7 @@ def execute_handshake(sock, my_identity_private_key, trusted_peers):
     ).start()
     
     # Run the UI Thread
-    user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files)
+    user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files, local_storage_key=get_local_storage_key())
 
 
 class PeerListener:
@@ -249,7 +274,7 @@ def recvall(sock, n):
         data.extend(packet)
     return bytes(data)
 
-def handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads, requested_files):
+def handle_incoming_message(sock, session_key, message, pending_uploads, pending_downloads, requested_files, local_storage_key=None):
     action = message.get("action")
     
     if action == "REQ_FILE":
@@ -323,9 +348,14 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
 
         file_bytes = base64.b64decode(b64_data)
         safe_filename = f"received_{filename}"
+        filepath = os.path.join(BASE_DIR, "available_files", safe_filename)
+        encrypted_file_bytes = encrypt_message(local_storage_key, file_bytes)
+
         with open(safe_filename, "wb") as f:
             f.write(file_bytes)
         print(f"[*] Saved '{filename}' to disk as '{safe_filename}'.")
+        print("P2P> ", end="", flush=True)
+
 
 
         
@@ -347,12 +377,17 @@ def handle_incoming_message(sock, session_key, message, pending_uploads, pending
         print("P2P> ", end="", flush=True)
 
 
-def send_file_to_peer(sock, session_key, filename):
+def send_file_to_peer(sock, session_key, filename, local_storage_key):
     filepath = os.path.join(BASE_DIR, "available_files", filename)    
     try:
         with open(filepath, "rb") as f:
-            file_bytes = f.read()
-            
+            encrypted_file_bytes = f.read()
+        try:
+            file_bytes = decrypt_message(local_storage_key, encrypted_file_bytes)
+        except Exception:
+                print(f"\n[-] Critical Error: Cannot decrypt '{filename}'. Invalid Master Password?")
+                return    
+        
         b64_data = base64.b64encode(file_bytes).decode('utf-8')
         
         response_dict = {
@@ -372,12 +407,16 @@ def send_file_to_peer(sock, session_key, filename):
         print(f"\n[-] Error: '{filename}' does not exist in your available_files directory.")
 
 
-def send_response_file_to_peer(sock, session_key, filename):
+def send_response_file_to_peer(sock, session_key, filename, local_storage_key):
     filepath = os.path.join(BASE_DIR, "available_files", filename)    
     try:
         with open(filepath, "rb") as f:
-            file_bytes = f.read()
-            
+            encrypted_file_bytes = f.read()
+        try:
+            file_bytes = decrypt_message(local_storage_key, encrypted_file_bytes)
+        except Exception:
+            print(f"\n[-] Critical Error: Cannot decrypt '{filename}'. Invalid Master Password?")
+            return
         b64_data = base64.b64encode(file_bytes).decode('utf-8')
         
         response_dict = {
@@ -398,7 +437,7 @@ def send_response_file_to_peer(sock, session_key, filename):
 
 
 
-def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files):
+def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files, local_storage_key=None):
     print("\n[+] Secure Tunnel Ready.")
     print("Commands: send <file>, request <file>, approve <file>, deny <file>, accept <file>, reject <file>, request_list, exit")
     
@@ -417,13 +456,13 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, r
             
             elif cmd == "send" and len(parts) == 2:
                 filename = parts[1]
-                send_file_to_peer(sock, session_key, filename)
+                send_file_to_peer(sock, session_key, filename, local_storage_key)
                 
             elif cmd == "approve" and len(parts) == 2:
                 filename = parts[1]
                 if filename in pending_uploads:
                     pending_uploads.remove(filename)
-                    send_response_file_to_peer(sock, session_key, filename)
+                    send_response_file_to_peer(sock, session_key, filename, local_storage_key)
                 else:
                     print(f"[-] No pending upload request for '{filename}'.")
                     
@@ -481,6 +520,9 @@ def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, r
 
 
 def main():
+
+    local_storage_key = get_local_storage_key()
+    print("[+] Local storage unlocked.")
     my_priv_key, trusted_peers = load_keys()
     if my_priv_key is None:
         return

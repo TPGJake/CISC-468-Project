@@ -1,5 +1,9 @@
+import os
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
+
+# Anchor to the directory where this script lives
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def generate_identity():
     # 1. Generate the key pair
@@ -19,14 +23,17 @@ def generate_identity():
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
 
-    # 4. Save to disk
-    with open("my_identity_key.pem", "wb") as f:
+    # 4. Anchor paths and save to disk
+    priv_path = os.path.join(BASE_DIR, "my_identity_key.pem")
+    pub_path = os.path.join(BASE_DIR, "my_identity_public_key.pem")
+
+    with open(priv_path, "wb") as f:
         f.write(pem_private)
         
-    with open("my_identity_public_key.pem", "wb") as f:
+    with open(pub_path, "wb") as f:
         f.write(pem_public)
         
-    print("[+] Keys successfully generated and saved!")
+    print(f"[+] Keys successfully generated and saved in {BASE_DIR}!")
 
 if __name__ == "__main__":
     generate_identity()
