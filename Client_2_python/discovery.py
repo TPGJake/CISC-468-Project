@@ -400,7 +400,7 @@ def send_response_file_to_peer(sock, session_key, filename):
 
 def user_interface_loop(sock, session_key, pending_uploads, pending_downloads, requested_files):
     print("\n[+] Secure Tunnel Ready.")
-    print("Commands: request <file>, approve <file>, deny <file>, accept <file>, reject <file>, request_list, exit")
+    print("Commands: send <file>, request <file>, approve <file>, deny <file>, accept <file>, reject <file>, request_list, exit")
     
     while True:
         try:
