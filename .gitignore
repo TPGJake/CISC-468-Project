@@ -2,6 +2,8 @@
 my_identity_key.pem
 my_identity_public_key.pem
 *.pem
+identity_priv.pem
+identity_pub.pem
 
 
 # Ignore the trusted peers folder
