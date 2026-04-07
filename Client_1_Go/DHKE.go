@@ -206,7 +206,7 @@ func startDHKE(host *Node, peer *Node, privIdentity ed25519.PrivateKey, pubIdent
 
 	}
 
-	ok, err := compareHashes(peerIdentityKey, "contacts")
+	ok := compareHashes(peerIdentityKey, "contacts")
 	if ok {
 		fmt.Println("Peer is already a contact! Connecting now...")
 	} else {
@@ -323,7 +323,7 @@ func saveContact(peerIdentity []byte) (string, error) {
 	return fingerprintHex, nil
 }
 
-func compareHashes(id []byte, contactDir string) (bool, error) {
+func compareHashes(id []byte, contactDir string) bool {
 
 	fingerprint := id[:12]
 	fingerprintHex := hex.EncodeToString(fingerprint)
@@ -332,9 +332,12 @@ func compareHashes(id []byte, contactDir string) (bool, error) {
 	fullpath := filepath.Join(contactDir, filename)
 
 	_, err := os.Stat(fullpath)
-	if err != nil && os.IsNotExist(err) {
-		return false, fmt.Errorf("Error checking for file %s: %v", fullpath, err)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+		return false
 	}
 
-	return true, nil
+	return true
 }

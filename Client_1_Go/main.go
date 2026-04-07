@@ -81,31 +81,15 @@ func main() {
 		case "discover":
 
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
 
-			done := make(chan []Node)
-
-			go func() {
-				peers, _ := node.discover(ctx)
-				done <- peers
-			}()
-
-			fmt.Println("Searching for peers for 15s... Press [ENTER] to stop search.")
-			userAbort := make(chan string)
-			go func() {
-				scanner.Scan()
-				userAbort <- scanner.Text()
-			}()
-
-			select {
-			case peerList = <-done:
-				fmt.Println("Timeout reached.")
-			case <-userAbort:
-				fmt.Println("Exiting early...")
-				cancel()
-				peerList = <-done
+			peerList, err = node.discover(ctx)
+			if err != nil {
+				fmt.Printf("Discovery Error: %v", err)
+				continue
 			}
 
-			fmt.Println("Here2")
+			fmt.Printf("Search complete! Found %d peers.\n", len(peerList))
 
 			for _, peer := range peerList {
 				conn, sessionKey, fingerprint, err := startDHKE(&node, &peer, privKey, pubKey)

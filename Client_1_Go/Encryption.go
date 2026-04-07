@@ -419,13 +419,13 @@ func decodeMessage(conn net.Conn, sessionKey []byte) (message, error) {
 	}
 
 	plaintext = bytes.Trim(plaintext, "\x00")
-
-	if err := json.Unmarshal(plaintext, &msg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(plaintext))
+	if err := decoder.Decode(&msg); err != nil {
 		return msg, fmt.Errorf("Failed to encode plaintext to message format: %v", err)
 	}
 
 	if msg.Action == "RES_FILE" || msg.Action == "SEND_FILE" {
-		err = verifyData(ciphertext)
+		err = verifyData(plaintext)
 		if err != nil {
 			return emptyMsg, err
 		}
